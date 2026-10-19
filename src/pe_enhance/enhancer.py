@@ -1,14 +1,12 @@
 """OpenAI-compatible LLM client for prompt enhancement."""
 from __future__ import annotations
 
-import base64
 import logging
-import mimetypes
 import os
-from collections.abc import Mapping, Sequence
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from importlib import resources
-from pathlib import Path
 from typing import Any, Literal
 
 import httpx
@@ -55,20 +53,29 @@ class PromptEnhancer:
         self.config = config
 
     @staticmethod
-    def _image_url(image: str) -> str:
-        value = os.fspath(image)
-        if value.startswith(("http://", "https://", "data:")):
-            return value
-        path = Path(value).expanduser()
-        mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-        encoded = base64.b64encode(path.read_bytes()).decode("ascii")
-        return f"data:{mime};base64,{encoded}"
+    def _user_message(prompt: str, size: str | None) -> str:
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise ValueError("prompt must be nonempty")
+        if size is None:
+            return prompt
+        match = (
+            re.fullmatch(r"([1-9]\d*)\s*[xX×*]\s*([1-9]\d*)", size.strip())
+            if isinstance(size, str) else None
+        )
+        if match is None:
+            raise ValueError("size must be WIDTHxHEIGHT with positive integer dimensions")
+        width, height = match.groups()
+        return (
+            "画布参数（用于规划布局，不是要绘制在图片上的文字；"
+            "如与原始需求中的尺寸冲突，以此处为准）：\n"
+            f"宽：{width} 像素\n高：{height} 像素\n\n"
+            f"用户原始需求：\n{prompt}"
+        )
 
     def _request(
         self,
         prompt: str,
         system_prompt: str | None,
-        images: Sequence[str],
         request_body: Mapping[str, Any] | None,
         body_fields: Mapping[str, Any],
     ) -> tuple[str, dict[str, Any], dict[str, str]]:
@@ -79,14 +86,9 @@ class PromptEnhancer:
             key = os.environ.get(self.config.api_key_env)
             if key:
                 headers["Authorization"] = f"Bearer {key}"
-        urls = [self._image_url(image) for image in images]
         if self.config.api_style == "responses":
-            content: str | list[dict[str, Any]] = prompt
-            if urls:
-                content = [{"type": "input_image", "image_url": url} for url in urls]
-                content.append({"type": "input_text", "text": prompt})
             body = {
-                "input": content if isinstance(content, str) else [{"role": "user", "content": content}],
+                "input": prompt,
                 "max_output_tokens": self.config.max_tokens,
                 "model": self.config.model,
             }
@@ -97,11 +99,7 @@ class PromptEnhancer:
             body.update(body_fields)
             self._check_model(body)
             return "responses", body, headers
-        content = prompt
-        if urls:
-            content = [{"type": "image_url", "image_url": {"url": url}} for url in urls]
-            content.append({"type": "text", "text": prompt})
-        messages = [{"role": "user", "content": content}]
+        messages = [{"role": "user", "content": prompt}]
         if system_prompt:
             messages.insert(0, {"role": "system", "content": system_prompt})
         body = {
@@ -180,38 +178,18 @@ class PromptEnhancer:
         prompt: str,
         *,
         system_prompt: str | None = None,
-        images: Sequence[str] = (),
+        size: str | None = None,
         request_body: Mapping[str, Any] | None = None,
         **body_fields: Any,
     ) -> Any:
         """Return the LLM's complete JSON body without parsing or changing it."""
-        path, body, headers = self._request(prompt, system_prompt, images, request_body, body_fields)
+        user_message = self._user_message(prompt, size)
+        path, body, headers = self._request(user_message, system_prompt, request_body, body_fields)
         debug = self._debug_enabled()
-        self._log_request(prompt, body, debug)
+        self._log_request(user_message, body, debug)
         try:
             with httpx.Client(base_url=self.config.base_url.rstrip("/") + "/", timeout=self.config.timeout, trust_env=False) as client:
                 response = client.post(path, json=body, headers=headers)
-        except httpx.RequestError as exc:
-            logger.error("Request error: %s", exc)
-            raise
-        return self._finish(response, debug)
-
-    async def aenhance(
-        self,
-        prompt: str,
-        *,
-        system_prompt: str | None = None,
-        images: Sequence[str] = (),
-        request_body: Mapping[str, Any] | None = None,
-        **body_fields: Any,
-    ) -> Any:
-        """Async variant of enhance."""
-        path, body, headers = self._request(prompt, system_prompt, images, request_body, body_fields)
-        debug = self._debug_enabled()
-        self._log_request(prompt, body, debug)
-        try:
-            async with httpx.AsyncClient(base_url=self.config.base_url.rstrip("/") + "/", timeout=self.config.timeout, trust_env=False) as client:
-                response = await client.post(path, json=body, headers=headers)
         except httpx.RequestError as exc:
             logger.error("Request error: %s", exc)
             raise

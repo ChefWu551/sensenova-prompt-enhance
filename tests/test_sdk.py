@@ -1,4 +1,3 @@
-import asyncio
 import json
 
 import httpx
@@ -15,16 +14,6 @@ def mock_sync(monkeypatch, handler):
         original(self, *args, **kwargs)
 
     monkeypatch.setattr(httpx.Client, "__init__", init)
-
-
-def mock_async(monkeypatch, handler):
-    original = httpx.AsyncClient.__init__
-
-    def init(self, *args, **kwargs):
-        kwargs["transport"] = httpx.MockTransport(handler)
-        original(self, *args, **kwargs)
-
-    monkeypatch.setattr(httpx.AsyncClient, "__init__", init)
 
 
 def test_chat_returns_complete_response_and_logs_only_when_enabled(monkeypatch, caplog):
@@ -91,26 +80,60 @@ def test_request_prompts_log_before_failed_http_response(monkeypatch, caplog):
     ]
 
 
-def test_image_edit_passes_images_to_llm_only(monkeypatch, tmp_path):
-    image = tmp_path / "source.png"
-    image.write_bytes(b"image")
+def test_image_edit_prompt_uses_text_only(monkeypatch):
     seen = []
 
     def respond(request):
         seen.append(json.loads(request.content))
-        return httpx.Response(200, json={"choices": [{"message": {"content": "change sky"}}], "id": "1"})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "修改原图中的天空，保持其他内容不变"}}]})
 
     mock_sync(monkeypatch, respond)
+    sdk = PromptEnhancer(LLMConfig("https://example.com/v1", "text-only-pe"))
+    sdk.enhance("把天空改成晚霞", system_prompt=load_system_prompt("image_edit"))
+    assert seen[0]["messages"][1]["content"] == "把天空改成晚霞"
+    assert "看不到底图或参考图" in seen[0]["messages"][0]["content"]
+
+
+@pytest.mark.parametrize("api_style", ["chat_completions", "responses"])
+@pytest.mark.parametrize("template", ["text_to_image", "image_edit"])
+def test_canvas_size_and_original_prompt_share_one_user_message(monkeypatch, api_style, template):
+    seen = []
+
+    def respond(request):
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json={"id": "result"})
+
+    mock_sync(monkeypatch, respond)
+    sdk = PromptEnhancer(LLMConfig("https://example.com/v1", "pe-v1", api_style=api_style))
+    system_prompt = load_system_prompt(template)
+    sdk.enhance("生成一张海报", system_prompt=system_prompt, size="2048x4096")
+    body = seen[0]
+    if api_style == "responses":
+        content = body["input"]
+        assert body["instructions"] == system_prompt
+    else:
+        assert [message["role"] for message in body["messages"]] == ["system", "user"]
+        assert body["messages"][0]["content"] == system_prompt
+        content = body["messages"][1]["content"]
+    assert "宽：2048 像素\n高：4096 像素" in content
+    assert content.endswith("用户原始需求：\n生成一张海报")
+    assert "size" not in body
+
+
+@pytest.mark.parametrize("size", ["2048", "0x4096", "2048x", "auto", 2048])
+def test_canvas_size_requires_two_positive_dimensions(size):
     sdk = PromptEnhancer(LLMConfig("https://example.com/v1", "pe-v1"))
-    result = sdk.enhance("改天空", system_prompt=load_system_prompt("image_edit"), images=[str(image)])
-    assert result["id"] == "1"
-    content = seen[0]["messages"][1]["content"]
-    assert content[0]["image_url"]["url"].startswith("data:image/png;base64,")
-    assert content[1] == {"type": "text", "text": "改天空"}
-    assert "visible_copy" in load_system_prompt("text_to_image")
+    with pytest.raises(ValueError, match="size"):
+        sdk.enhance("生成一张海报", size=size)
 
 
-def test_responses_async_returns_complete_response(monkeypatch, caplog):
+@pytest.mark.parametrize("size", ["2048x4096", "2048×4096", "2048*4096"])
+def test_canvas_size_accepts_common_separators(size):
+    content = PromptEnhancer._user_message("生成一张海报", size)
+    assert "宽：2048 像素\n高：4096 像素" in content
+
+
+def test_responses_returns_complete_response(monkeypatch, caplog):
     expected = {"id": "resp-1", "status": "completed", "output": [{"type": "message", "content": [{"type": "output_text", "text": "clear scene"}]}], "usage": {"total_tokens": 24}}
     seen = []
     logs_at_request = []
@@ -120,11 +143,11 @@ def test_responses_async_returns_complete_response(monkeypatch, caplog):
         seen.append((str(request.url), json.loads(request.content)))
         return httpx.Response(200, json=expected)
 
-    mock_async(monkeypatch, respond)
+    mock_sync(monkeypatch, respond)
     monkeypatch.setenv("PE_ENHANCE_DEBUG", "1")
     sdk = PromptEnhancer(LLMConfig("https://example.com/v1", "pe-v1", api_style="responses"))
-    assert asyncio.run(sdk.aenhance("brief", system_prompt="rewrite", top_p=0.6,
-                                    chat_template_kwargs={"enable_thinking": False})) == expected
+    assert sdk.enhance("brief", system_prompt="rewrite", top_p=0.6,
+                       chat_template_kwargs={"enable_thinking": False}) == expected
     assert seen[0][0] == "https://example.com/v1/responses"
     assert seen[0][1]["instructions"] == "rewrite"
     assert seen[0][1]["input"] == "brief"
@@ -209,4 +232,3 @@ def test_final_model_must_be_nonempty_even_with_overrides():
     sdk = PromptEnhancer(LLMConfig("https://example.com/v1"))
     with pytest.raises(ValueError, match="model"):
         sdk.enhance("hello", model="")
-

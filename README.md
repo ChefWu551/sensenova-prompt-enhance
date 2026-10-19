@@ -1,6 +1,6 @@
 # PE Enhance SDK
 
-一个只负责调用 Prompt Enhancement（PE）LLM 的轻量 Python SDK。调用方提供用户 Prompt；system prompt 可选。SDK 调用兼容 OpenAI 的 LLM 接口，并**原样返回模型的完整 JSON 响应体**（含 `id`、`choices`/`output`、`usage` 等）。SDK 不选择图像模型、不解析或验证改写文本、不调用文生图或图片编辑服务。
+一个只负责调用 Prompt Enhancement（PE）LLM 的轻量 Python SDK。调用方提供用户 Prompt；system prompt 可选。SDK 默认只向 PE LLM 发送文字，不会读取或编码原图、参考图。SDK 调用兼容 OpenAI 的 LLM 接口，并**原样返回模型的完整 JSON 响应体**（含 `id`、`choices`/`output`、`usage` 等）。SDK 不选择图像模型、不解析或验证改写文本、不调用文生图或图片编辑服务。
 
 ```mermaid
 flowchart LR
@@ -14,7 +14,7 @@ flowchart LR
 
 ## 安装
 
-开发时可在源码目录执行 `python -m pip install -e .`。**当前模板译文尚未重新打包**；`dist/` 中的 0.2.2 wheel 仍是此前版本。调试本轮修改请安装当前源码，等功能确认后再统一打包。
+开发时可在源码目录执行 `python -m pip install -e .`。`dist/` 中的 0.2.2 wheel 按当前源码重新打包。
 
 这个项目可以打成一个**纯 Python wheel**，同一个文件可安装在 Windows 和 Ubuntu（Python 3.10+）：
 
@@ -60,30 +60,34 @@ sdk = PromptEnhancer(LLMConfig(
 user_request = {
     "prompt": "生成一张中文书展海报，标题是‘阅读之夜’",
     "enhance_prompt": True,
+    "size": "2048x4096",
 }
 if user_request["enhance_prompt"]:
     response = sdk.enhance(
         user_request["prompt"],
         system_prompt=load_system_prompt("text_to_image"),
+        size=user_request["size"],
     )
     print(response)  # 完整的 LLM 响应体，不只是 choices[0].message.content
 ```
 
-图片编辑 PE 可以把原图或参考图一起发给**支持视觉输入的 PE LLM**：
+图片编辑 PE 可只发送用户文字指令，适用于**不支持视觉输入的 PE LLM**。内置图片编辑模板会要求 PE LLM 避免猜测原图内容；调用方再把增强后的文字与原图交给图片编辑模型：
 
 ```python
 response = sdk.enhance(
     "把天空改成晚霞，保持人物不变",
     system_prompt=load_system_prompt("image_edit"),
-    images=["/data/input.png", "https://example.com/reference.png"],
+    size="2048x4096",
 )
 ```
 
-`images` 支持本地图片路径、HTTP(S) URL 和 `data:image/...` URL。异步调用为 `await sdk.aenhance(...)`。使用 Responses API 时设置 `LLMConfig(..., api_style="responses")`。如果需要不同 PE LLM，可分别构建多个 `PromptEnhancer` 实例。system prompt 也可以直接传入自己的字符串；内置的两个模板只是可选示例，不会根据目标图像模型自动切换。源码中的两份模板只是将原有英文内容翻译为中文，规则不变：文生图保留原 JSON 结构与字段名；图片编辑仍要求使用与用户原始指令相同的语言；用户指定要出现在图片中的文字仍按原文保留。
+使用 Responses API 时设置 `LLMConfig(..., api_style="responses")`。如果需要不同 PE LLM，可分别构建多个 `PromptEnhancer` 实例。system prompt 也可以直接传入自己的字符串；内置的两个模板只是可选示例，不会根据目标图像模型自动切换。文生图模板保留原 JSON 结构与字段名；图片编辑模板为纯文字 PE，要求保留用户原始语言及用户指定的可见文字，不推断未见过的图像内容。
+
+指定画布宽高时，传入可选的 `size="2048x4096"`。文生图和图片编辑采用相同处理：SDK 在同一条 user message 中先列出解析后的宽、高，再附上用户原始需求，固定的 system prompt 不会因尺寸变化而改写。画布参数会标明为布局约束，不是图片中的可见文字；若原始需求中的尺寸与参数冲突，以参数为准。`size` 必须包含两个正整数边长，分隔符支持 `x`、`×` 或 `*`。未传时，user message 保持为原始提示词。SDK 返回的是模型原始 JSON；实际出图尺寸仍需在后续图像生成或编辑调用中设置。
 
 请求前只要求 `prompt`、`base_url`（请求 URL 的基础地址）和**最终请求体**中的 `model` 非空。其他配置不做必填校验；例如不传 `system_prompt` 时不会发送 system 消息，`api_key_env` 对应的环境变量未设置时不会发送 Authorization 头，服务端如要求鉴权会返回 HTTP 错误。
 
-其他 LLM 请求参数可以直接传给 `enhance()` 或 `aenhance()`，它们会原样放进 JSON 请求体，不按字段名过滤：
+其他 LLM 请求参数可以直接传给 `enhance()`，它们会原样放进 JSON 请求体，不按字段名过滤：
 
 ```python
 response = sdk.enhance(
@@ -97,7 +101,7 @@ response = sdk.enhance(
 )
 ```
 
-合并顺序为 SDK 默认值、`LLMConfig.extra_body`、`request_body`、本次调用的额外关键字参数；同名字段以最后传入的值为准。`prompt`、`system_prompt`、`images` 和 `request_body` 是 SDK 方法参数，如需发送同名 JSON 字段，可放进 `request_body`。`LLMConfig.model` 可以留空，只要最终请求体通过 `extra_body`、`request_body` 或调用参数提供非空 `model` 即可。覆盖 `messages` 或 `input` 时，SDK 会按你传的内容直接发送。
+合并顺序为 SDK 默认值、`LLMConfig.extra_body`、`request_body`、本次调用的额外关键字参数；同名字段以最后传入的值为准。`prompt`、`system_prompt`、`size` 和 `request_body` 是 SDK 方法参数，如需发送同名 JSON 字段，可放进 `request_body`。`LLMConfig.model` 可以留空，只要最终请求体通过 `extra_body`、`request_body` 或调用参数提供非空 `model` 即可。覆盖 `messages` 或 `input` 时，SDK 会按你传的内容直接发送，也会覆盖 SDK 组装的画布参数。
 
 SDK 不默认发送 `temperature`；需要时可在单次调用中传 `temperature=0.2`，该字段会直接透传到请求体。
 
