@@ -1,0 +1,21 @@
+# Python caches and build artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# Local environments and secrets
+.venv/
+venv/
+myenv/
+.env
+.env.*
+!.env.example
+
+# Editor and OS files
+.idea/
+.DS_Store

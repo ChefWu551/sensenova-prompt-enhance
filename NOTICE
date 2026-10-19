@@ -1,0 +1,5 @@
+The sensenova_u1_5_text_to_image_prompt.txt and
+sensenova_u1_5_image_edit_prompt.txt prompts are derived from the
+SenseNova-U1 repository's src/sensenova_u1_5/image_pe.py and
+src/sensenova_u1_5/edit/edit_pe.py, licensed under Apache License 2.0.
+Source: https://github.com/OpenSenseNova/SenseNova-U1
