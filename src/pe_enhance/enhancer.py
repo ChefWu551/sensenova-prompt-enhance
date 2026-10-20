@@ -36,9 +36,9 @@ class LLMConfig:
 
 
 def load_system_prompt(name: Literal["text_to_image", "image_edit"]) -> str:
-    """Load an optional SenseNova U1.5 prompt; selection is explicit."""
+    """Load an optional image prompt enhancer template; selection is explicit."""
     files = {
-        "text_to_image": "sensenova_u1_5_text_to_image_prompt.txt",
+        "text_to_image": "universal_image_prompt_v1_1.txt",
         "image_edit": "sensenova_u1_5_image_edit_prompt.txt",
     }
     if name not in files:

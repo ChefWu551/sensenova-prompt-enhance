@@ -4,9 +4,7 @@
 
 ```mermaid
 flowchart LR
-    A[用户 Prompt] --> B{Agent 是否开启 PE}
-    B -- 否 --> C[Agent 保留原始 Prompt]
-    B -- 是 --> D[Agent 选择 system prompt 和 PE LLM]
+    A[用户 Prompt] --> D[Agent 选择 system prompt 和 PE LLM]
     D --> E[PE SDK 请求 LLM]
     E --> F[返回完整 LLM 响应 JSON]
     F --> G[Agent 决定如何使用响应]
@@ -39,7 +37,7 @@ python3 -m pip install --upgrade ./pe_enhance-0.2.2-py3-none-any.whl
 python3 -c "from pe_enhance import LLMConfig, PromptEnhancer, load_system_prompt; print(load_system_prompt('text_to_image')[:80])"
 ```
 
-`pip` 会安装 SDK 依赖的 `httpx`；若机器不能访问依赖源，需要提前准备对应依赖包。`py3-none-any` 表示 wheel 本身没有操作系统专属二进制代码。打包时已包含两份 SenseNova 提示词模板。
+`pip` 会安装 SDK 依赖的 `httpx`；若机器不能访问依赖源，需要提前准备对应依赖包。`py3-none-any` 表示 wheel 本身没有操作系统专属二进制代码。打包时已包含通用文生图和图片编辑两份提示词模板。
 
 需要 OpenAI 兼容的 `/v1/chat/completions` 或 `/v1/responses` 接口。API Key 从环境变量读取。
 
@@ -56,19 +54,16 @@ sdk = PromptEnhancer(LLMConfig(
     api_key_env="PE_API_KEY",
 ))
 
-# enhance_prompt 是 Agent 层的开关；只在开启时调用 SDK。
 user_request = {
     "prompt": "生成一张中文书展海报，标题是‘阅读之夜’",
-    "enhance_prompt": True,
     "size": "2048x4096",
 }
-if user_request["enhance_prompt"]:
-    response = sdk.enhance(
-        user_request["prompt"],
-        system_prompt=load_system_prompt("text_to_image"),
-        size=user_request["size"],
-    )
-    print(response)  # 完整的 LLM 响应体，不只是 choices[0].message.content
+response = sdk.enhance(
+    user_request["prompt"],
+    system_prompt=load_system_prompt("text_to_image"),
+    size=user_request["size"],
+)
+print(response)  # 完整的 LLM 响应体，不只是 choices[0].message.content
 ```
 
 图片编辑 PE 可只发送用户文字指令，适用于**不支持视觉输入的 PE LLM**。内置图片编辑模板会要求 PE LLM 避免猜测原图内容；调用方再把增强后的文字与原图交给图片编辑模型：
@@ -81,7 +76,7 @@ response = sdk.enhance(
 )
 ```
 
-使用 Responses API 时设置 `LLMConfig(..., api_style="responses")`。如果需要不同 PE LLM，可分别构建多个 `PromptEnhancer` 实例。system prompt 也可以直接传入自己的字符串；内置的两个模板只是可选示例，不会根据目标图像模型自动切换。文生图模板保留原 JSON 结构与字段名；图片编辑模板为纯文字 PE，要求保留用户原始语言及用户指定的可见文字，不推断未见过的图像内容。
+使用 Responses API 时设置 `LLMConfig(..., api_style="responses")`。如果需要不同 PE LLM，可分别构建多个 `PromptEnhancer` 实例。system prompt 也可以直接传入自己的字符串；内置的两个模板只是可选示例，不会根据目标图像模型自动切换。通用文生图模板按用户需求动态补足视觉细节，输出自然语言提示词，不要求 JSON 格式或固定长度；图片编辑模板为纯文字 PE，要求保留用户原始语言及用户指定的可见文字，不推断未见过的图像内容。SDK 仍原样返回 LLM 接口的完整 JSON 响应，调用方从中取出提示词文字即可。
 
 指定画布宽高时，传入可选的 `size="2048x4096"`。文生图和图片编辑采用相同处理：SDK 在同一条 user message 中先列出解析后的宽、高，再附上用户原始需求，固定的 system prompt 不会因尺寸变化而改写。画布参数会标明为布局约束，不是图片中的可见文字；若原始需求中的尺寸与参数冲突，以参数为准。`size` 必须包含两个正整数边长，分隔符支持 `x`、`×` 或 `*`。未传时，user message 保持为原始提示词。SDK 返回的是模型原始 JSON；实际出图尺寸仍需在后续图像生成或编辑调用中设置。
 
@@ -96,7 +91,6 @@ response = sdk.enhance(
     model="pe-model-v2",  # 覆盖配置里的默认模型
     top_p=0.7,
     chat_template_kwargs={"enable_thinking": True},  # 原样透传给上游 LLM
-    response_format={"type": "json_object"},
     request_body={"vendor_option": {"enabled": True}},  # 也可传整个参数字典
 )
 ```
@@ -127,11 +121,11 @@ SDK 仍以一次请求返回一个完整 JSON 响应；如果向上游传 `strea
 src/pe_enhance/
 ├── __init__.py
 ├── enhancer.py                              # LLM 配置、请求、响应与日志
-├── sensenova_u1_5_text_to_image_prompt.txt # 可选的文生图 system prompt
+├── universal_image_prompt_v1_1.txt          # 通用文生图 system prompt
 └── sensenova_u1_5_image_edit_prompt.txt    # 可选的图片编辑 system prompt
 ```
 
-两个 SenseNova U1.5 模板源自 SenseNova-U1 工程，版权说明见 [NOTICE](NOTICE) 和 [LICENSE](LICENSE)。
+图片编辑模板改写自 SenseNova-U1 工程，版权说明见 [NOTICE](NOTICE) 和 [LICENSE](LICENSE)。
 
 ## 测试
 
