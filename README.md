@@ -12,7 +12,7 @@ flowchart LR
 
 ## 安装
 
-开发时可在源码目录执行 `python -m pip install -e .`。`dist/` 中的 0.2.3 wheel 按当前源码重新打包。
+开发时可在源码目录执行 `python -m pip install -e .`。`dist/` 中的 0.2.4 wheel 按当前源码重新打包。
 
 这个项目可以打成一个**纯 Python wheel**，同一个文件可安装在 Windows 和 Ubuntu（Python 3.10+）：
 
@@ -21,19 +21,19 @@ python -m pip install build setuptools wheel
 python -m build --wheel
 ```
 
-产物位于 `dist/pe_enhance-0.2.3-py3-none-any.whl`。将这个文件复制到目标机器后安装：
+产物位于 `dist/pe_enhance-0.2.4-py3-none-any.whl`。将这个文件复制到目标机器后安装：
 
 Windows PowerShell：
 
 ```powershell
-py -m pip install --upgrade .\pe_enhance-0.2.3-py3-none-any.whl
+py -m pip install --upgrade .\pe_enhance-0.2.4-py3-none-any.whl
 py -c "from pe_enhance import LLMConfig, PromptEnhancer, load_system_prompt; print(load_system_prompt('text_to_image')[:80])"
 ```
 
 Ubuntu：
 
 ```bash
-python3 -m pip install --upgrade ./pe_enhance-0.2.3-py3-none-any.whl
+python3 -m pip install --upgrade ./pe_enhance-0.2.4-py3-none-any.whl
 python3 -c "from pe_enhance import LLMConfig, PromptEnhancer, load_system_prompt; print(load_system_prompt('text_to_image')[:80])"
 ```
 
@@ -76,7 +76,7 @@ response = sdk.enhance(
 )
 ```
 
-使用 Responses API 时设置 `LLMConfig(..., api_style="responses")`。如果需要不同 PE LLM，可分别构建多个 `PromptEnhancer` 实例。system prompt 也可以直接传入自己的字符串；内置的两个模板只是可选示例，不会根据目标图像模型自动切换。文生图模板采用精简的 SenseNova-U1.5 增强规则，按信息缺口补足视觉细节，要求模型输出 Render JSON，包含主体、场景、构图、风格、光色、细节、可见文字、画布及约束。图片编辑模板为纯文字 PE，要求保留用户原始语言及用户指定的可见文字，不推断未见过的图像内容，仍输出自然语言编辑指令。SDK 原样返回 LLM 接口的完整 JSON 响应；文生图的 Render JSON 位于响应内容中，调用方需要自行解析、校验，并按下游图像模型的输入要求使用或组装提示词。模板选择方式仍为 `load_system_prompt("text_to_image")`。
+使用 Responses API 时设置 `LLMConfig(..., api_style="responses")`。如果需要不同 PE LLM，可分别构建多个 `PromptEnhancer` 实例。system prompt 也可以直接传入自己的字符串；内置的两个模板只是可选示例，不会根据目标图像模型自动切换。文生图模板采用通用增强规则，按信息缺口补足视觉细节，并吸收 MOSS-Image 的意图判断、信息层级规划与文字精确保留原则；不输出模型专属坐标或语法。模型仍输出 Render JSON，包含主体、场景、构图、风格、光色、细节、可见文字、画布及约束。图片编辑模板为纯文字 PE，要求保留用户原始语言及用户指定的可见文字，不推断未见过的图像内容，仍输出自然语言编辑指令。SDK 原样返回 LLM 接口的完整 JSON 响应；文生图的 Render JSON 位于响应内容中，调用方需要自行解析、校验，并按下游图像模型的输入要求使用或组装提示词。模板选择方式仍为 `load_system_prompt("text_to_image")`。
 
 指定画布宽高时，传入可选的 `size="2048x4096"`。文生图和图片编辑采用相同处理：SDK 在同一条 user message 中先列出解析后的宽、高，再附上用户原始需求，固定的 system prompt 不会因尺寸变化而改写。画布参数会标明为布局约束，不是图片中的可见文字；若原始需求中的尺寸与参数冲突，以参数为准。`size` 必须包含两个正整数边长，分隔符支持 `x`、`×` 或 `*`。未传时，user message 保持为原始提示词。SDK 返回的是模型原始 JSON；实际出图尺寸仍需在后续图像生成或编辑调用中设置。
 
