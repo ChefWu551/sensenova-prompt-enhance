@@ -232,3 +232,59 @@ def test_final_model_must_be_nonempty_even_with_overrides():
     sdk = PromptEnhancer(LLMConfig("https://example.com/v1"))
     with pytest.raises(ValueError, match="model"):
         sdk.enhance("hello", model="")
+
+
+def test_stream_assembles_content_and_logs_once(monkeypatch, caplog):
+    seen = []
+
+    def respond(request):
+        seen.append(json.loads(request.content))
+        events = [
+            {"id": "stream-1", "object": "chat.completion.chunk", "created": 1,
+             "model": "pe-v1", "choices": [{"index": 0, "delta": {"reasoning": "thinking", "content": "改写"}, "finish_reason": None}]},
+            {"id": "stream-1", "object": "chat.completion.chunk", "created": 1,
+             "model": "pe-v1", "choices": [{"index": 0, "delta": {"content": "后的提示词"}, "finish_reason": "stop"}]},
+            {"id": "stream-1", "choices": [], "usage": {"total_tokens": 12}},
+        ]
+        data = "".join(f"data: {json.dumps(event, ensure_ascii=False)}\n\n" for event in events) + "data: [DONE]\n\n"
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, text=data)
+
+    mock_sync(monkeypatch, respond)
+    monkeypatch.setenv("PE_ENHANCE_DEBUG", "1")
+    sdk = PromptEnhancer(LLMConfig("https://example.com/v1", "pe-v1", stream=True))
+    result = sdk.enhance("原文")
+    assert seen[0]["stream"] is True
+    assert result["choices"][0]["message"]["content"] == "改写后的提示词"
+    assert result["choices"][0]["finish_reason"] == "stop"
+    assert result["usage"] == {"total_tokens": 12}
+    assert [r.getMessage() for r in caplog.records].count("output_prompt:\n改写后的提示词") == 1
+
+
+@pytest.mark.parametrize("events, message", [
+    ([{"choices": [{"index": 0, "delta": {"content": "partial"}, "finish_reason": None}]}], "did not finish"),
+    ([{"choices": [{"index": 0, "delta": {"content": "partial"}, "finish_reason": "length"}]}], "did not finish"),
+    ([{"choices": [{"index": 0, "delta": {"content": "partial"}, "finish_reason": "stop"}]}], "without \\[DONE\\]"),
+    ([{"error": {"message": "server failed"}}], "server failed"),
+    ([{"choices": [{"index": 0, "delta": {"reasoning": "hidden"}, "finish_reason": "stop"}]}], "no prompt content"),
+])
+def test_stream_rejects_incomplete_or_failed_result(monkeypatch, events, message):
+    body = "".join(f"data: {json.dumps(event)}\n\n" for event in events)
+    mock_sync(monkeypatch, lambda request: httpx.Response(200, text=body))
+    sdk = PromptEnhancer(LLMConfig("https://example.com/v1", "pe-v1", stream=True))
+    with pytest.raises(ValueError, match=message):
+        sdk.enhance("hello")
+
+
+def test_stream_override_and_http_failure(monkeypatch, caplog):
+    seen = []
+
+    def respond(request):
+        seen.append(json.loads(request.content))
+        return httpx.Response(503, text="unavailable")
+
+    mock_sync(monkeypatch, respond)
+    sdk = PromptEnhancer(LLMConfig("https://example.com/v1", "pe-v1"))
+    with pytest.raises(httpx.HTTPStatusError):
+        sdk.enhance("hello", stream=True)
+    assert seen[0]["stream"] is True
+    assert "HTTP 503" in caplog.text

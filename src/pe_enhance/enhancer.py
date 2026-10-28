@@ -1,6 +1,7 @@
 """OpenAI-compatible LLM client for prompt enhancement."""
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -29,10 +30,13 @@ class LLMConfig:
     timeout: float = 60.0
     max_tokens: int = 4096
     extra_body: dict[str, Any] = field(default_factory=dict)
+    stream: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.base_url, str) or not self.base_url.strip():
             raise ValueError("base_url must be nonempty")
+        if not isinstance(self.stream, bool):
+            raise ValueError("stream must be a boolean")
 
 
 def load_system_prompt(name: Literal["text_to_image", "image_edit"]) -> str:
@@ -105,7 +109,7 @@ class PromptEnhancer:
         body = {
             "messages": messages,
             "max_tokens": self.config.max_tokens,
-            "stream": False,
+            "stream": self.config.stream,
             "model": self.config.model,
         }
         body.update(self.config.extra_body)
@@ -173,6 +177,86 @@ class PromptEnhancer:
             logger.info("output_prompt:\n%s", cls._output_prompt(payload) or "<unavailable>")
         return payload
 
+    @classmethod
+    def _finish_stream(cls, response: httpx.Response, debug: bool) -> dict[str, Any]:
+        if not response.is_success:
+            logger.error("HTTP %s: %s", response.status_code, response.read().decode("utf-8", errors="replace"))
+            response.raise_for_status()
+        chunks: list[str] = []
+        first: dict[str, Any] | None = None
+        finish_reason = None
+        usage = None
+        data_lines: list[str] = []
+        done = False
+
+        def consume(data: str) -> None:
+            nonlocal first, finish_reason, usage, done
+            if data == "[DONE]":
+                done = True
+                return
+            try:
+                event = json.loads(data)
+            except ValueError as exc:
+                raise ValueError("Invalid JSON stream event") from exc
+            if not isinstance(event, dict):
+                raise ValueError("Stream event must be a JSON object")
+            if "error" in event:
+                raise ValueError(f"LLM stream error: {event['error']}")
+            choices = event.get("choices")
+            if not isinstance(choices, list):
+                raise ValueError("Stream event has invalid choices")
+            if first is None and choices:
+                first = event
+            if event.get("usage") is not None:
+                usage = event["usage"]
+            for choice in choices:
+                if not isinstance(choice, dict) or choice.get("index") != 0:
+                    continue
+                delta = choice.get("delta")
+                if not isinstance(delta, dict):
+                    raise ValueError("Stream choice has invalid delta")
+                content = delta.get("content")
+                if content is not None:
+                    if not isinstance(content, str):
+                        raise ValueError("Stream content must be text")
+                    chunks.append(content)
+                if choice.get("finish_reason") is not None:
+                    finish_reason = choice["finish_reason"]
+
+        for line in response.iter_lines():
+            if not line:
+                if data_lines:
+                    consume("\n".join(data_lines))
+                    data_lines.clear()
+                if done:
+                    break
+                continue
+            if line.startswith(":"):
+                continue
+            if line.startswith("data:"):
+                data_lines.append(line[5:].lstrip(" "))
+        if data_lines and not done:
+            consume("\n".join(data_lines))
+        if first is None or not chunks:
+            raise ValueError("Stream contained no prompt content")
+        if finish_reason != "stop":
+            raise ValueError(f"Stream did not finish successfully: {finish_reason!r}")
+        if not done:
+            raise ValueError("Stream ended without [DONE]")
+        payload = {
+            "id": first.get("id"),
+            "object": "chat.completion",
+            "created": first.get("created"),
+            "model": first.get("model"),
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "".join(chunks)},
+                         "finish_reason": finish_reason}],
+        }
+        if usage is not None:
+            payload["usage"] = usage
+        if debug:
+            logger.info("output_prompt:\n%s", payload["choices"][0]["message"]["content"])
+        return payload
+
     def enhance(
         self,
         prompt: str,
@@ -182,13 +266,24 @@ class PromptEnhancer:
         request_body: Mapping[str, Any] | None = None,
         **body_fields: Any,
     ) -> Any:
-        """Return the LLM's complete JSON body without parsing or changing it."""
+        """Return a complete JSON response; assemble streamed chat content when enabled."""
         user_message = self._user_message(prompt, size)
         path, body, headers = self._request(user_message, system_prompt, request_body, body_fields)
+        if not isinstance(body.get("stream", False), bool):
+            raise ValueError("stream must be a boolean")
+        if body.get("stream") and self.config.api_style != "chat_completions":
+            raise ValueError("stream is supported only for chat_completions")
         debug = self._debug_enabled()
         self._log_request(user_message, body, debug)
         try:
             with httpx.Client(base_url=self.config.base_url.rstrip("/") + "/", timeout=self.config.timeout, trust_env=False) as client:
+                if body.get("stream"):
+                    with client.stream("POST", path, json=body, headers=headers) as response:
+                        try:
+                            return self._finish_stream(response, debug)
+                        except ValueError as exc:
+                            logger.error("Invalid stream response: %s", exc)
+                            raise
                 response = client.post(path, json=body, headers=headers)
         except httpx.RequestError as exc:
             logger.error("Request error: %s", exc)

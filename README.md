@@ -101,7 +101,7 @@ SDK 不默认发送 `temperature`；需要时可在单次调用中传 `temperatu
 
 `chat_template_kwargs={"enable_thinking": True}` 或 `False` 都不会由 SDK 解析或过滤；是否真正启用思考由上游 LLM 服务决定。也可以把同一个字典放进 `request_body`。
 
-SDK 仍以一次请求返回一个完整 JSON 响应；如果向上游传 `stream=true`，上游通常返回事件流，这种响应无法按 JSON 解析。
+Chat Completions 可设置 `LLMConfig(..., stream=True)`，也可在单次调用中传 `enhance(..., stream=True)`。SDK 会读取 vLLM/SGLang 的 SSE 事件，依次拼接 `choices[index=0].delta.content`，忽略 `reasoning`，直到流结束才返回。返回值仍是完整的 JSON 风格字典，改写后的提示词位于 `response["choices"][0]["message"]["content"]`；流式响应的其他元数据保留 `id`、`created`、`model`、`finish_reason`，如上游提供 `usage` 也会保留。只有收到有效内容、`finish_reason="stop"` 和 `[DONE]` 结束标记才返回结果；提前断流、长度截断或流内错误会抛出异常，避免把不完整提示词当作成功结果。`stream=False` 保持原有响应原样返回行为。流式模式目前仅支持 Chat Completions。
 
 ## 日志与错误
 
